@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Ankdown: Convert Markdown files into anki decks.
 
 This is a hacky script that I wrote because I wanted to use
@@ -33,7 +33,7 @@ Second Card Back (note that tags are optional)
 ```
 
 Usage:
-    ankdown.py [-r DIR] [-p PACKAGENAME]
+    ankdown.py [-r DIR] [-p PACKAGENAME] [--css CSS_STRING] [--dollar]
 
 Options:
     -h --help     Show this help message
@@ -42,6 +42,10 @@ Options:
     -r DIR        Recursively visit DIR, accumulating cards from `.md` files.
 
     -p PACKAGE    Instead of a .txt file, produce a .apkg file. recommended.
+
+    --css CSS_STRING   CSS Config as String
+
+    --dollar    Uses dollar sign as math separator instead of brackets
 """
 
 
@@ -58,7 +62,8 @@ import genanki
 
 from docopt import docopt
 
-VERSION = "0.5.2"
+VERSION = "0.5.3"
+FLAG_DOLLAR = False
 
 def simple_hash(text):
     """MD5 of text, mod 2^63. Probably not a great hash function."""
@@ -100,35 +105,36 @@ class Card(object):
 
     MODEL_NAME = "Ankdown Model 2"
     MODEL_ID = simple_hash(MODEL_NAME)
-    MODEL = genanki.Model(
-        MODEL_ID,
-        MODEL_NAME,
-        fields=[
-            {"name": "Question"},
-            {"name": "Answer"},
-            {"name": "Tags"},
-        ],
-        templates=[
-            {
-                "name": "Ankdown Card",
-                "qfmt": "{{{{Question}}}}\n{0}".format(MATHJAX_CONTENT),
-                "afmt": "{{{{Question}}}}<hr id='answer'>{{{{Answer}}}}\n{0}".format(MATHJAX_CONTENT),
-            },
-        ],
-        css="""
+    MODEL_CSS = """
         .card {
             font-family: 'Crimson Pro', 'Crimson Text', 'Cardo', 'Times', 'serif';
             text-align: center;
             color: black;
             background-color: white;
         }
-        """,
-    )
+        """
 
     def __init__(self, filename, file_index):
         self.fields = []
         self.filename = filename
         self.file_index = file_index
+        self.model = genanki.Model(
+            Card.MODEL_ID,
+            Card.MODEL_NAME,
+            fields=[
+                {"name": "Question"},
+                {"name": "Answer"},
+                {"name": "Tags"},
+            ],
+            templates=[
+                {
+                    "name": "Ankdown Card",
+                    "qfmt": "{{{{Question}}}}\n{0}".format(Card.MATHJAX_CONTENT),
+                    "afmt": "{{{{Question}}}}<hr id='answer'>{{{{Answer}}}}\n{0}".format(Card.MATHJAX_CONTENT),
+                },
+            ],
+            css=Card.MODEL_CSS
+        )
 
     def deckdir(self):
         return os.path.dirname(self.filename)
@@ -164,7 +170,7 @@ class Card(object):
 
     def to_genanki_note(self):
         """Produce a genanki.Note with the specified guid."""
-        return genanki.Note(model=Card.MODEL, fields=self.fields, guid=self.guid())
+        return genanki.Note(model=self.model, fields=self.fields, guid=self.guid())
 
     def make_ref_pair(self, filename):
         """Take a filename relative to the card, and make it absolute."""
@@ -207,11 +213,20 @@ class DeckCollection(dict):
         return super(DeckCollection, self).__getitem__(deckname)
 
 def field_to_html(field):
-    # Need to extract the math in brackets so that it doesn't get
-    # markdowned.
-    for bracket in ["(", ")", "[", "]"]:
-        field = field.replace(r"\{}".format(bracket), r"\\{}".format(bracket))
-        # backslashes, man.
+    """Need to extract the math in brackets so that it doesn't get markdowned.
+    If math is separated with dollar sign it is converted to brackets."""
+    if FLAG_DOLLAR:
+        for (sep, (op, cl)) in [("$$", (r"\\[", r"\\]")), ("$", (r"\\(", r"\\)"))]:
+            escaped_sep = sep.replace(r"$", r"\$")
+            # ignore escaped dollar signs when splitting the field    
+            field = re.split(r"(?<!\\){}".format(escaped_sep), field) 
+            # add op(en) and cl(osing) brackets to every second element of the list
+            field[1::2] = [op + e + cl for e in field[1::2]] 
+            field = "".join(field)
+    else:
+        for bracket in ["(", ")", "[", "]"]:
+            field = field.replace(r"\{}".format(bracket), r"\\{}".format(bracket))
+            # backslashes, man.
 
     return misaka.html(field, extensions=("fenced-code", "math"))
 
@@ -283,7 +298,11 @@ def main():
     """Run the thing."""
 
     arguments = docopt(__doc__, version=VERSION)
-
+    global FLAG_DOLLAR
+    FLAG_DOLLAR = arguments.get('--dollar')
+    css_config = arguments.get('--css')
+    if css_config is not None:
+        Card.MODEL_CSS = css_config
     pkg_arg = arguments.get('-p', 'AnkdownPkg.apkg')
     recur_dir = arguments.get('-r', '.')
     initial_dir = os.getcwd()
